@@ -38,6 +38,7 @@
 #define REGENERATE_MAX 10
 #define REGEN_EVERY_S 2.0f
 
+#define SKY_SIZE 1000.0f
 typedef enum Cell {
     EMPTY,
     WALL,
@@ -53,7 +54,7 @@ typedef struct Client {
     bool camera_moved;
 
     Shader shader;
-
+    Mesh sky_wall;
     Model outer_walls;
     Model walls[BOARD_HEIGHT / RENDER_CHUNK][BOARD_WIDTH / RENDER_CHUNK];
     Cell past_board[BOARD_HEIGHT][BOARD_WIDTH];
@@ -146,6 +147,9 @@ int main(void) {
     Mesh cylinder = gen_cylinder();
     client->outer_walls = LoadModelFromMesh(cylinder);
     client->outer_walls.materials[0].shader = client->shader;
+
+    Mesh plane = GenMeshPlane(SKY_SIZE, SKY_SIZE, 1, 1);
+    client->sky_wall = plane;
 
     generate_wall(client, game);
 
@@ -313,14 +317,30 @@ void handle_controls(Client *client, Game *game) {
 
 void draw(Client *client, Game *game) {
     BeginDrawing();
-    ClearBackground(DARKGRAY);
+
+    ClearBackground(BLACK);
 
     BeginMode3D(client->camera);
 
-    // DrawGrid(maxi(BOARD_WIDTH, BOARD_HEIGHT), 1.0f);
-
-
     BeginShaderMode(client->shader);
+
+    Material sky_mat = LoadMaterialDefault();
+    sky_mat.shader = client->shader;
+    sky_mat.maps[MATERIAL_MAP_DIFFUSE].color = (Color){0, 0, 255, 255};
+    DrawMesh(client->sky_wall, sky_mat, MatrixMultiply(
+        MatrixRotateX(PI / 2), MatrixTranslate(0, SKY_SIZE / 2, -SKY_SIZE / 2)));
+    DrawMesh(client->sky_wall, sky_mat, MatrixMultiply(
+        MatrixRotateX(-PI / 2), MatrixTranslate(0, SKY_SIZE / 2, SKY_SIZE / 2)));
+    DrawMesh(client->sky_wall, sky_mat,
+             MatrixMultiply(
+                 MatrixMultiply(MatrixRotateX(PI / 2), MatrixRotateY(-PI / 2)),
+                 MatrixTranslate(SKY_SIZE / 2, SKY_SIZE / 2, 0)));
+    DrawMesh(client->sky_wall, sky_mat,
+             MatrixMultiply(
+                 MatrixMultiply(MatrixRotateX(PI / 2), MatrixRotateY(PI / 2)),
+                 MatrixTranslate(-SKY_SIZE / 2, SKY_SIZE / 2, 0)));
+    DrawMesh(client->sky_wall, sky_mat,
+            MatrixMultiply(MatrixRotateX(PI), MatrixTranslate(0, SKY_SIZE / 2, 0)));
 
     DrawModel(client->outer_walls, (Vector3){0.0f, 0.0f, 0.0f}, 1.0f,
               (Color){255, 255, 0, 255});

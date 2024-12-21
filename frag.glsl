@@ -18,6 +18,8 @@ out vec4 finalColor;
 #define fbm_steps 4
 #define wall_height 5.0
 #define outer_wall_height 10.0
+#define sky_extents 1000.0
+#define PI 3.14159265359
 
 vec4 gray(float color) {
     return vec4(color, color, color, 1.0);
@@ -102,6 +104,10 @@ float fbm_3d(vec3 st) {
     return value;
 }
 
+mat2 rot_matrix(float angle) {
+    return mat2(cos(angle), sin(angle), -sin(angle), cos(angle));
+}
+
 vec3 darkGreen = vec3(0.1, 0.2, 0.1) / 0.5;
 vec3 slightlyLighterGreen = vec3(0.2, 0.3, 0.2) / 0.5;
 vec3 darkBrown = vec3(0.2, 0.1, 0.0) / 0.6;
@@ -122,6 +128,16 @@ void main() {
     } else if (colDiffuse.r == 1.0 && colDiffuse.g == 1.0 && colDiffuse.b == 0.0) {
         float height = fragPositionWorld.y / outer_wall_height;
         finalColor = vec4(mix(darkBrown, brown, height), 1.0);
+    } else if (colDiffuse.r == 0.0 && colDiffuse.g == 0.0 && colDiffuse.b == 1.0) {
+        vec3 skyDir = fragPositionWorld / (sky_extents / 200.0);
+        float noiseValue = fbm_3d(skyDir);
+        #define star_thresh 0.68
+        float grays = max(0.0, noiseValue - star_thresh) * 10;
+        float color = max(0.0, noiseValue - star_thresh + 0.01) * 10;
+        vec3 starColor = vec3(0.0, 0.0, 1.0);
+        starColor.xz = rot_matrix(-fbm_3d(skyDir.xzy / 4) * PI / 3) * starColor.xz;
+        // starColor.yz = rot_matrix(fbm_3d(skyDir.yzx / 4) * PI * 2) * starColor.yz;
+        finalColor = vec4(gray(grays).rgb + color * starColor, 1.0);
     } else {
         finalColor = fragColor;
     }
