@@ -15,10 +15,10 @@
 #define WALL_HEIGHT 5.0
 #define RENDER_CHUNK 32
 #define GRAD_NOISE_BLOCK 16
-#define GRAD_NOISE_THRESHOLD -0.1
+#define GRAD_NOISE_THRESHOLD -0.05
 #define ACCELERATION 0.5f
 #define MOVE_SPEED 0.5f
-#define BOUNCE_SPEED 0.5f
+#define BOUNCE_SPEED 0.2f
 
 #define CAM_OFFSET 45.0
 #define CAM_INITIAL_ANGLE (PI / 4)
@@ -96,11 +96,12 @@ void copy_past_board(Client *client, Game *game);
 Mesh gen_cylinder();
 void generate_wall(Client *client, Game *game);
 
-inline float ent_radius(Entity *e) { return 0.5f; }
+// inline float ent_radius(Entity *e) { return 0.5f; }
+inline float ent_radius(Entity *e) { return 1.2f; }
 
 int main(void) {
     Game *game = calloc(1, sizeof(Game));
-    game->n_entities = 50;
+    game->n_entities = 128;
     game->entities = calloc(game->n_entities, sizeof(Entity));
     game->generation_seed = 15;
 
@@ -138,7 +139,7 @@ int main(void) {
 
     InitWindow(client->width, client->height, "same");
 
-    Shader shader = LoadShader("vert.vs", "frag.fs");
+    Shader shader = LoadShader("vert.glsl", "frag.glsl");
 
     client->shader = shader;
 
@@ -154,10 +155,10 @@ int main(void) {
         float dt = GetFrameTime();
         draw(client, game);
         handle_controls(client, game);
-        if (game->frame % 120 == 0) {
+        if (game->frame % 60 == 0) {
             for (int i = 1; i < game->n_entities; i++) {
-                Vector2 target = (Vector2) {rand() / (float)RAND_MAX,
-                                            rand() / (float)RAND_MAX};
+                Vector2 target = (Vector2) {rand() / (float)RAND_MAX - 0.5,
+                                            rand() / (float)RAND_MAX - 0.5};
                 target = Vector2Scale(Vector2Normalize(target), MOVE_SPEED);
                 game->entities[i].target_velocity = target;
             }
