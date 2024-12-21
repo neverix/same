@@ -41,10 +41,9 @@ typedef struct Client {
     bool camera_moved;
 
     Shader shader;
-    Shader inst_shader;
 
     Model outer_walls;
-    Mesh wall;
+    Model walls;
 } Client;
 
 typedef enum Cell {
@@ -98,26 +97,32 @@ int main(void) {
     InitWindow(client->width, client->height, "same");
 
     Shader shader = LoadShader("vert.vs", "frag.fs");
-    // Shader inst_shader = LoadShader("inst.vs", "frag.fs");
-    Shader inst_shader = LoadShader(TextFormat("inst.vs", 330), TextFormat("frag.fs", 330));
-    inst_shader.locs[SHADER_LOC_MATRIX_MVP] =
-        GetShaderLocation(inst_shader, "mvp");
-    inst_shader.locs[SHADER_LOC_VECTOR_VIEW] =
-        GetShaderLocation(inst_shader, "viewPos");
 
     client->shader = shader;
-    client->inst_shader = inst_shader;
 
     Mesh cylinder = gen_cylinder();
     client->outer_walls = LoadModelFromMesh(cylinder);
     client->outer_walls.materials[0].shader = client->shader;
 
-    Mesh wall = GenMeshCube(1.0f, WALL_HEIGHT, 1.0f);
-    UploadMesh(&wall, false);
-    client->wall = wall;
-    // client->wall = LoadModelFromMesh(wall);
-    // client->wall.materials[0].shader = client->shader;
-    // client->wall.materials->maps[0].color = BLACK;
+
+    char wall_data[BOARD_HEIGHT][BOARD_WIDTH][3] = {0};
+    Image walls = (Image){.width = BOARD_WIDTH,
+                          .height = BOARD_HEIGHT,
+                          .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8,
+                          .data = (void *)wall_data};
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            char col =
+                game->board[y][x] == WALL ? 255 : 0;
+                 wall_data[y][x][0] = col;
+                    wall_data[y][x][1] = col;
+                    wall_data[y][x][2] = col;
+        }
+    }
+    Mesh walls_mesh = GenMeshCubicmap(walls, (Vector3){1.0, WALL_HEIGHT, 1.0});
+    client->walls = LoadModelFromMesh(walls_mesh);
+    client->walls.materials[0].shader = client->shader;
+    client->walls.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = (Color) {0, 255, 255, 255};
 
     SetTargetFPS(60);
 
@@ -257,37 +262,9 @@ void draw(Client *client, Game *game) {
 
     DrawPlane((Vector3){0.0f, 0.0f, 0.0f}, (Vector2){GROUND_EXTENTS, GROUND_EXTENTS}, (Color){0, 255, 0, 255});
 
-    int n_walls = 0;
-    for (int y = 0; y < BOARD_HEIGHT; y++) {
-        for (int x = 0; x < BOARD_WIDTH; x++) {
-            if (game->board[y][x] == WALL) {
-                n_walls++;
-            }
-        }
-    }
-    Matrix *transforms = calloc(n_walls, sizeof(Matrix));
     Material mat = LoadMaterialDefault();
     mat.maps[MATERIAL_MAP_DIFFUSE].color = (Color){0, 255, 255, 0};
-    mat.shader = client->inst_shader;
-    int wall_i = 0;
-    for (int y = 0; y < BOARD_HEIGHT; y++) {
-        for (int x = 0; x < BOARD_WIDTH; x++) {
-            if (game->board[y][x] == WALL) {
-                // DrawMesh(
-                //     client->wall, mat,
-                 transforms[wall_i] =   MatrixTranslate(x - BOARD_WIDTH / 2 + 0.5f, WALL_HEIGHT / 2,
-                                    y - BOARD_HEIGHT / 2 + 0.5f);
-                                    wall_i++;
-            }
-        }
-    }
-    Matrix transform = MatrixIdentity();
-    EndShaderMode();
-    DrawMeshInstanced(client->wall, mat, &transform, 1);
-    BeginShaderMode(client->shader);
-    // DrawMesh(client->wall, mat, transform);
-    // DrawMeshInstanced(client->wall, mat, transforms, n_walls);
-    free(transforms);
+    DrawModel(client->walls, (Vector3){-BOARD_WIDTH / 2 + 1, 0.0f, -BOARD_HEIGHT / 2 + 1}, 1.0f, WHITE);
 
     for (int i = 0; i < game->n_entities; i++) {
         float radius = ent_radius(&game->entities[i]);
