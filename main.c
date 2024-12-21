@@ -13,6 +13,7 @@
 #define BOARD_WIDTH 512
 #define BOARD_HEIGHT 512
 #define WALL_HEIGHT 5.0
+#define RENDER_CHUNK 32
 #define GRAD_NOISE_BLOCK 16
 #define GRAD_NOISE_THRESHOLD -0.1
 #define ACCELERATION 0.5f
@@ -37,6 +38,12 @@
 #define REGENERATE_MAX 10
 #define REGEN_EVERY_S 2.0f
 
+typedef enum Cell {
+    EMPTY,
+    WALL,
+    RESOURCE,
+} Cell;
+
 typedef struct Client {
     float width;
     float height;
@@ -48,14 +55,9 @@ typedef struct Client {
     Shader shader;
 
     Model outer_walls;
-    Model walls;
+    Model walls[BOARD_HEIGHT / RENDER_CHUNK][BOARD_WIDTH / RENDER_CHUNK];
+    Cell past_board[BOARD_HEIGHT][BOARD_WIDTH];
 } Client;
-
-typedef enum Cell {
-    EMPTY,
-    WALL,
-    RESOURCE,
-} Cell;
 
 typedef struct Entity {
     Vector2 position;
@@ -89,6 +91,7 @@ void draw(Client *client, Game *game);
 void handle_controls(Client *client, Game *game);
 bool process_collisions(Game *game, float dt);
 bool regen_board(Game *game);
+void copy_past_board(Client *client, Game *game);
 
 Mesh gen_cylinder();
 void generate_wall(Client *client, Game *game);
@@ -159,15 +162,12 @@ int main(void) {
                 game->entities[i].target_velocity = target;
             }
         }
-        if(process_collisions(game, dt) == true) {
-            generate_wall(client, game);
-        }
+        process_collisions(game, dt);
         if (game->elapsed_time - game->last_regenned > REGEN_EVERY_S) {
-            if (regen_board(game)) {
-                generate_wall(client, game);
-            }
+            regen_board(game);
             game->last_regenned = game->elapsed_time;
         }
+        generate_wall(client, game);
         game->frame++;
     }
 
@@ -328,7 +328,17 @@ void draw(Client *client, Game *game) {
 
     Material mat = LoadMaterialDefault();
     mat.maps[MATERIAL_MAP_DIFFUSE].color = (Color){0, 255, 255, 0};
-    DrawModel(client->walls, (Vector3){-BOARD_WIDTH / 2 + 1, 0.0f, -BOARD_HEIGHT / 2 + 1}, 1.0f, WHITE);
+    for (int y = 0; y < BOARD_HEIGHT; y += RENDER_CHUNK) {
+        for (int x = 0; x < BOARD_WIDTH; x += RENDER_CHUNK) {
+            if (client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK].meshCount == 0) {
+                continue;
+            }
+            DrawModel(client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK],
+                      (Vector3){x - BOARD_WIDTH / 2, 0.0f, y - BOARD_HEIGHT / 2},
+                      1.0f, WHITE);
+        }
+    }
+    // DrawModel(client->walls, (Vector3){-BOARD_WIDTH / 2 + 1, 0.0f, -BOARD_HEIGHT / 2 + 1}, 1.0f, WHITE);
 
     for (int i = 0; i < game->n_entities; i++) {
         float radius = ent_radius(&game->entities[i]);
@@ -578,25 +588,57 @@ inline Mesh gen_cylinder() {
 }
 
 inline void generate_wall(Client *client, Game *game) {
-    if (client->walls.meshes != NULL) {
-        UnloadModel(client->walls);
-    }
-    unsigned char wall_data[BOARD_HEIGHT][BOARD_WIDTH][3] = {0};
-    Image walls = (Image){.width = BOARD_WIDTH,
-                          .height = BOARD_HEIGHT,
+    unsigned char wall_data[RENDER_CHUNK][RENDER_CHUNK][3] = {0};
+    Image walls = (Image){.width = RENDER_CHUNK,
+                          .height = RENDER_CHUNK,
                           .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8,
                           .data = (void *)wall_data};
-    for (int y = 0; y < BOARD_HEIGHT; y++) {
-        for (int x = 0; x < BOARD_WIDTH; x++) {
-            unsigned char col = game->board[y][x] == WALL ? 255 : 0;
-            wall_data[y][x][0] = col;
-            wall_data[y][x][1] = col;
-            wall_data[y][x][2] = col;
+    // int have_changed = 0;
+    for (int y = 0; y < BOARD_HEIGHT; y += RENDER_CHUNK) {
+        for (int x = 0; x < BOARD_WIDTH; x += RENDER_CHUNK) {
+            bool has_changed = false;
+            for (int oy = 0; oy < RENDER_CHUNK; oy++) {
+                for (int ox = 0; ox < RENDER_CHUNK; ox++) {
+                    if (game->board[y + oy][x + ox] != client->past_board[y + oy][x + ox]) {
+                        has_changed = true;
+                        break;
+                    }
+                }
+                if (has_changed) {
+                    break;
+                }
+            }
+            if (!has_changed) {
+                continue;
+            }
+            if (client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK].meshCount > 0) {
+                UnloadModel(client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK]);
+            }
+            // have_changed++;
+            for (int oy = 0; oy < RENDER_CHUNK; oy++) {
+                for (int ox = 0; ox < RENDER_CHUNK; ox++) {
+                    unsigned char col = game->board[y + oy][x + ox] == WALL ? 255 : 0;
+                    wall_data[oy][ox][0] = col;
+                    wall_data[oy][ox][1] = col;
+                    wall_data[oy][ox][2] = col;
+                }
+            }
+            Mesh walls_mesh = GenMeshCubicmap(walls, (Vector3){1.0, WALL_HEIGHT, 1.0});
+            client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK] = LoadModelFromMesh(walls_mesh);
+            client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK].materials[0].shader = client->shader;
+            client->walls[y / RENDER_CHUNK][x / RENDER_CHUNK].materials[0].maps[MATERIAL_MAP_DIFFUSE].color =
+                (Color){0, 255, 255, 255};
         }
     }
-    Mesh walls_mesh = GenMeshCubicmap(walls, (Vector3){1.0, WALL_HEIGHT, 1.0});
-    client->walls = LoadModelFromMesh(walls_mesh);
-    client->walls.materials[0].shader = client->shader;
-    client->walls.materials[0].maps[MATERIAL_MAP_DIFFUSE].color =
-        (Color){0, 255, 255, 255};
+    // float changed_frac = have_changed / (float)(BOARD_HEIGHT / RENDER_CHUNK * BOARD_WIDTH / RENDER_CHUNK);
+    // printf("changed_frac: %f\n", changed_frac);
+    copy_past_board(client, game);
+}
+
+void copy_past_board(Client *client, Game *game) {
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            client->past_board[y][x] = game->board[y][x];
+        }
+    }
 }
