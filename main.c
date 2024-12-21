@@ -79,6 +79,7 @@ typedef struct {
 
     float elapsed_time;
     float last_regenned;
+    int frame;
 } Game;
 
 void gen_board(Game *game);
@@ -96,7 +97,7 @@ inline float ent_radius(Entity *e) { return 0.5f; }
 
 int main(void) {
     Game *game = calloc(1, sizeof(Game));
-    game->n_entities = 1;
+    game->n_entities = 50;
     game->entities = calloc(game->n_entities, sizeof(Entity));
     game->generation_seed = 15;
 
@@ -150,6 +151,14 @@ int main(void) {
         float dt = GetFrameTime();
         draw(client, game);
         handle_controls(client, game);
+        if (game->frame % 120 == 0) {
+            for (int i = 1; i < game->n_entities; i++) {
+                Vector2 target = (Vector2) {rand() / (float)RAND_MAX,
+                                            rand() / (float)RAND_MAX};
+                target = Vector2Scale(Vector2Normalize(target), MOVE_SPEED);
+                game->entities[i].target_velocity = target;
+            }
+        }
         if(process_collisions(game, dt) == true) {
             generate_wall(client, game);
         }
@@ -159,6 +168,7 @@ int main(void) {
             }
             game->last_regenned = game->elapsed_time;
         }
+        game->frame++;
     }
 
     CloseWindow();
@@ -273,9 +283,7 @@ void handle_controls(Client *client, Game *game) {
         client->camera_moved = true;
     }
 
-    for (int i = 0; i < game->n_entities; i++) {
-        game->entities[i].target_velocity = (Vector2){0, 0};
-    }
+    game->entities[0].target_velocity = (Vector2){0, 0};
 
     Vector2 camera_forward = Vector2Normalize(Vector2Subtract(
         (Vector2){client->camera.target.x, client->camera.target.z},
