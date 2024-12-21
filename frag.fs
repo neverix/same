@@ -15,13 +15,7 @@ uniform vec4 colDiffuse;
 
 // Output fragment color
 out vec4 finalColor;
-
-// float max_terrain_height = 1.0;
-float max_terrain_height = 2.0;
-
 #define fbm_steps 4
-// #define raymarch_steps 2
-#define raymarch_steps 8
 #define wall_height 5.0
 #define outer_wall_height 10.0
 
@@ -108,10 +102,6 @@ float fbm_3d(vec3 st) {
     return value;
 }
 
-float terrain_height(vec2 st) {
-    return max_terrain_height * fbm(st * 0.2);
-}
-
 vec3 darkGreen = vec3(0.1, 0.2, 0.1) / 0.5;
 vec3 slightlyLighterGreen = vec3(0.2, 0.3, 0.2) / 0.5;
 vec3 darkBrown = vec3(0.2, 0.1, 0.0) / 0.6;
@@ -119,43 +109,17 @@ vec3 brown = vec3(0.35, 0.25, 0.1) / 0.6;
 vec3 darkestBrown = darkBrown * (darkBrown / brown);
 
 void main() {
-    if (fragColor.r == 0.0 && fragColor.g == 0.0 && fragColor.b == 0.0) {
+    if (colDiffuse.r == 0.0 && colDiffuse.g == 1.0 && colDiffuse.b == 1.0) {
         // finalColor = gray(fragPositionWorld.y / 70.0 + 0.1);
         float height = fragPositionWorld.y / wall_height;
         finalColor = vec4(mix(darkBrown, brown, sqrt(height)), 1.0);
     } else if (fragColor.r == 0.0 && fragColor.g == 1.0 && fragColor.b == 0.0) {
-        // vec3 rayDir = normalize(inverse(mat3(mvp)) * vec3(0.0, 0.0, 1.0));
-        float rayLength = max_terrain_height / (-rayDir.y);
-        vec3 rayOrigin = fragPositionWorld - rayDir * rayLength - vec3(0.0, max_terrain_height, 0.0);
-
-        for (int i = 0; i < raymarch_steps; i++) {
-            float noiseValue = terrain_height(rayOrigin.xz);
-            if (rayOrigin.y + max_terrain_height < noiseValue) {
-                break;
-            }
-            rayOrigin += rayDir * rayLength / raymarch_steps;
-        }
-
-        float noiseValue = terrain_height(rayOrigin.xz) / max_terrain_height;
-        vec3 color = mix(darkestBrown, darkBrown, noiseValue);
+        // float noiseValue = fbm(fragPositionWorld.xz * 0.2);
+        // vec3 color = mix(darkestBrown, darkBrown, noiseValue);
+        vec3 color = darkBrown;
 
         finalColor = vec4(color, 1.0);
     } else if (colDiffuse.r == 1.0 && colDiffuse.g == 1.0 && colDiffuse.b == 0.0) {
-        // vec3 index = fragPositionWorld / 10.0;
-        // float x = fbm_3d(index);
-        // float y = fbm_3d(index + vec3(0.0, 0.0, 10.0));
-        // float z = fbm_3d(index + vec3(0.0, 0.0, 2-.0));
-        // vec3 new_xyz = index + vec3(x, y, z) * 10;
-        // float val = fbm_3d(new_xyz);
-        
-        // // finalColor = gray(val);
-        // // vec3 darkPurple = vec3(0.1, 0.0, 0.1);
-        // // vec3 lightPurple = vec3(0.5, 0.0, 0.7);
-        // vec3 darkPurple = darkestBrown;
-        // // vec3 lightPurple = brown;
-        // vec3 lightPurple = vec3(0.5, 0.0, 0.7);
-        // finalColor = vec4(mix(darkPurple, lightPurple, val), 1.0);
-
         float height = fragPositionWorld.y / outer_wall_height;
         finalColor = vec4(mix(darkBrown, brown, height), 1.0);
     } else {
