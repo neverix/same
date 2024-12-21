@@ -7,6 +7,7 @@
 #include "math.h"
 
 #define maxi(a, b) ((a) > (b) ? (a) : (b))
+#define imin(a, b) ((a) < (b) ? (a) : (b))
 // #define BOARD_WIDTH 256
 // #define BOARD_HEIGHT 256
 #define BOARD_WIDTH 512
@@ -15,8 +16,8 @@
 #define GRAD_NOISE_BLOCK 16
 #define GRAD_NOISE_THRESHOLD -0.1
 #define ACCELERATION 0.5f
-#define MOVE_SPEED 0.3f
-#define BOUNCE_SPEED 0.3f
+#define MOVE_SPEED 0.5f
+#define BOUNCE_SPEED 0.5f
 
 #define CAM_OFFSET 45.0
 #define CAM_INITIAL_ANGLE (PI / 4)
@@ -31,6 +32,10 @@
 #define CYLINDER_HEIGHT (WALL_HEIGHT * 2)
 #define CYLINDER_RADIUS (WORLD_RADIUS)
 #define GROUND_EXTENTS 1000.0f
+
+#define DESTRUCTION_RADIUS 5.0f
+#define REGENERATE_MAX 10
+#define REGEN_EVERY_S 2.0f
 
 typedef struct Client {
     float width;
@@ -63,9 +68,17 @@ typedef struct Entity {
 } Entity;
 
 typedef struct {
-    Cell board[BOARD_HEIGHT][BOARD_WIDTH];
     int n_entities;
     Entity *entities;
+
+    Cell board[BOARD_HEIGHT][BOARD_WIDTH];
+    bool was_destroyed[BOARD_HEIGHT][BOARD_WIDTH];
+    float noise_buf[BOARD_HEIGHT][BOARD_WIDTH];
+    int n_walls;
+    int generation_seed;
+
+    float elapsed_time;
+    float last_regenned;
 } Game;
 
 void gen_board(Game *game);
@@ -73,9 +86,11 @@ void grad_noise(float *result_buf);
 
 void draw(Client *client, Game *game);
 void handle_controls(Client *client, Game *game);
-void process_collisions(Game *game, float dt);
+bool process_collisions(Game *game, float dt);
+bool regen_board(Game *game);
 
 Mesh gen_cylinder();
+void generate_wall(Client *client, Game *game);
 
 inline float ent_radius(Entity *e) { return 0.5f; }
 
@@ -83,9 +98,32 @@ int main(void) {
     Game *game = calloc(1, sizeof(Game));
     game->n_entities = 1;
     game->entities = calloc(game->n_entities, sizeof(Entity));
-    game->entities[0].position = (Vector2){0, 0};
+    game->generation_seed = 15;
 
     gen_board(game);
+    bool has_spawned[BOARD_HEIGHT][BOARD_WIDTH] = {0};
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            if (game->board[y][x] == WALL) {
+                game->n_walls++;
+                has_spawned[y][x] = true;
+            }
+        }
+    }
+    has_spawned[BOARD_HEIGHT / 2][BOARD_WIDTH / 2] = true;
+    for (int i = 0; i < game->n_entities; i++) {
+        for (int j = 0; j < 128; j++) {
+            int y = rand() % BOARD_HEIGHT, x = rand() % BOARD_WIDTH;
+            Vector2 pos = {x - BOARD_WIDTH / 2, y - BOARD_HEIGHT / 2};
+            float radius = ent_radius(&game->entities[i]);
+            if (Vector2Length(pos) < WORLD_RADIUS - radius && !has_spawned[y][x]) {
+                game->entities[i] = (Entity) {0};
+                game->entities[i].position = pos;
+                has_spawned[y][x] = true;
+                break;
+            }
+        }
+    }
 
     Client *client = calloc(1, sizeof(Client));
     client->width = 800;
@@ -104,25 +142,7 @@ int main(void) {
     client->outer_walls = LoadModelFromMesh(cylinder);
     client->outer_walls.materials[0].shader = client->shader;
 
-
-    char wall_data[BOARD_HEIGHT][BOARD_WIDTH][3] = {0};
-    Image walls = (Image){.width = BOARD_WIDTH,
-                          .height = BOARD_HEIGHT,
-                          .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8,
-                          .data = (void *)wall_data};
-    for (int y = 0; y < BOARD_HEIGHT; y++) {
-        for (int x = 0; x < BOARD_WIDTH; x++) {
-            char col =
-                game->board[y][x] == WALL ? 255 : 0;
-                 wall_data[y][x][0] = col;
-                    wall_data[y][x][1] = col;
-                    wall_data[y][x][2] = col;
-        }
-    }
-    Mesh walls_mesh = GenMeshCubicmap(walls, (Vector3){1.0, WALL_HEIGHT, 1.0});
-    client->walls = LoadModelFromMesh(walls_mesh);
-    client->walls.materials[0].shader = client->shader;
-    client->walls.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = (Color) {0, 255, 255, 255};
+    generate_wall(client, game);
 
     SetTargetFPS(60);
 
@@ -130,7 +150,15 @@ int main(void) {
         float dt = GetFrameTime();
         draw(client, game);
         handle_controls(client, game);
-        process_collisions(game, dt);
+        if(process_collisions(game, dt) == true) {
+            generate_wall(client, game);
+        }
+        if (game->elapsed_time - game->last_regenned > REGEN_EVERY_S) {
+            if (regen_board(game)) {
+                generate_wall(client, game);
+            }
+            game->last_regenned = game->elapsed_time;
+        }
     }
 
     CloseWindow();
@@ -138,7 +166,8 @@ int main(void) {
     return 0;
 }
 
-void process_collisions(Game *game, float dt) {
+bool process_collisions(Game *game, float dt) {
+    bool wall_changed = false;
     for (int i = 0; i < game->n_entities; i++) {
         game->entities[i].velocity = Vector2Add(
             game->entities[i].velocity,
@@ -149,6 +178,7 @@ void process_collisions(Game *game, float dt) {
         Vector2 original_position = game->entities[i].position;
         Vector2 projected_position = Vector2Add(original_position, og_velocity);
         bool collided = false;
+        bool with_wall = false;
         Vector2 collision_direction;
 
         float radius = ent_radius(&game->entities[i]);
@@ -176,6 +206,7 @@ void process_collisions(Game *game, float dt) {
             }
             if (flagged > 0) {
                 collided = true;
+                with_wall = true;
                 collision_direction =
                     Vector2Scale(Vector2Normalize(directions), -1.0f);
             }
@@ -199,7 +230,32 @@ void process_collisions(Game *game, float dt) {
         } else {
             game->entities[i].position = projected_position;
         }
+
+        if (with_wall) {
+            Vector2 epicenter = game->entities[i].position;
+            for (int ox = -ceil(DESTRUCTION_RADIUS); ox <= ceil(DESTRUCTION_RADIUS); ox++) {
+                for (int oy = -ceil(DESTRUCTION_RADIUS); oy <= ceil(DESTRUCTION_RADIUS); oy++) {
+                    Vector2 offset = {ox, oy};
+                    if (Vector2Length(offset) > DESTRUCTION_RADIUS) {
+                        continue;
+                    }
+                    Vector2 target = Vector2Add(epicenter, offset);
+                    if (target.x < -BOARD_WIDTH / 2 || target.x >= BOARD_WIDTH / 2 ||
+                        target.y < -BOARD_HEIGHT / 2 || target.y >= BOARD_HEIGHT / 2) {
+                        continue;
+                    }
+                    if (game->board[(int)(target.y + BOARD_HEIGHT / 2)][(int)(target.x + BOARD_WIDTH / 2)] == WALL) {
+                        int a = (int)(target.y + BOARD_HEIGHT / 2), b = (int)(target.x + BOARD_WIDTH / 2);
+                        game->board[a][b] = EMPTY;
+                        game->was_destroyed[a][b] = true;
+                        wall_changed = true;
+                    }
+                }
+            }
+        }
     }
+    game->elapsed_time += dt;
+    return wall_changed;
 }
 
 void handle_controls(Client *client, Game *game) {
@@ -361,9 +417,9 @@ void grad_noise(float *result_buf) {
     }
 }
 
-void gen_board(Game *game) {
-    float noise_buf[BOARD_HEIGHT][BOARD_WIDTH];
-    grad_noise((float *)noise_buf);
+inline void gen_board(Game *game) {
+    srand(game->generation_seed);
+    grad_noise((float*)game->noise_buf);
     for (int y = 0; y < BOARD_HEIGHT; y++) {
         for (int x = 0; x < BOARD_WIDTH; x++) {
             Vector2 pos = {x - BOARD_WIDTH / 2, y - BOARD_HEIGHT / 2};
@@ -372,7 +428,7 @@ void gen_board(Game *game) {
                 game->board[y][x] = EMPTY;
                 continue;
             }
-            if (noise_buf[y][x] > GRAD_NOISE_THRESHOLD) {
+            if (game->noise_buf[y][x] > GRAD_NOISE_THRESHOLD) {
                 game->board[y][x] = EMPTY;
             } else {
                 game->board[y][x] = WALL;
@@ -381,7 +437,82 @@ void gen_board(Game *game) {
     }
 }
 
-Mesh gen_cylinder() {
+int cmpfunc(const void *a, const void *b) {
+    float x = *(float*)a;
+    float y = *(float*)b;
+    if (x > y) {
+        return 1;
+    } else if (x < y) {
+        return -1;
+    } else {
+        return 0;
+    }
+}
+
+inline bool regen_board(Game *game) {
+    int current_walls = 0;
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            if (game->board[y][x] == WALL) {
+                current_walls++;
+            }
+        }
+    }
+    int to_generate = imin(game->n_walls - current_walls, REGENERATE_MAX * game->n_entities);
+    // printf("to_generate: %d\n", to_generate);
+    if (to_generate == 0) {
+        return false;
+    }
+
+    float eligible_noises[BOARD_HEIGHT * BOARD_WIDTH] = {__FLT_MAX__};
+    int n_eligible = 0;
+
+    bool players_present[BOARD_HEIGHT][BOARD_WIDTH] = {0};
+    for (int i = 0; i < game->n_entities; i++) {
+        Vector2 pos = game->entities[i].position;
+        int y = pos.y + BOARD_HEIGHT / 2, x = pos.x + BOARD_WIDTH / 2;
+        for (int oy = -2; oy <= 2; oy++) {
+            for (int ox = -2; ox <= 2; ox++) {
+                int ry = y + oy, rx = x + ox;
+                if (ry < 0 || ry >= BOARD_HEIGHT || rx < 0 || rx >= BOARD_WIDTH) {
+                    continue;
+                }
+                players_present[ry][rx] = true;
+            }
+        }
+    }
+
+    #define is_eligible(y, x) (game->was_destroyed[y][x] && game->board[y][x] == EMPTY \
+        && Vector2Length((Vector2){(x) - BOARD_WIDTH / 2, (y) - BOARD_HEIGHT / 2}) < WORLD_RADIUS \
+        && !players_present[y][x])
+
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            if (is_eligible(y, x)) {
+                eligible_noises[n_eligible++] = game->noise_buf[y][x];
+            }
+        }
+    }
+    if (n_eligible < to_generate) {
+        to_generate = n_eligible;
+    }
+    // printf("eligible: %d\n", to_generate);
+    qsort(eligible_noises, BOARD_HEIGHT * BOARD_WIDTH, sizeof(float), cmpfunc);
+    float regen_cutoff = eligible_noises[to_generate - 1];
+    bool changed = false;
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            if (is_eligible(y, x) && game->noise_buf[y][x] <= regen_cutoff) {
+                game->board[y][x] = WALL;
+                game->was_destroyed[y][x] = false;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+inline Mesh gen_cylinder() {
     Mesh cylinder = {0};
     cylinder.triangleCount = CYLINDER_RES * 2;
     cylinder.vertexCount = cylinder.triangleCount * 3;
@@ -436,4 +567,28 @@ Mesh gen_cylinder() {
     }
     UploadMesh(&cylinder, false);
     return cylinder;
+}
+
+inline void generate_wall(Client *client, Game *game) {
+    if (client->walls.meshes != NULL) {
+        UnloadModel(client->walls);
+    }
+    unsigned char wall_data[BOARD_HEIGHT][BOARD_WIDTH][3] = {0};
+    Image walls = (Image){.width = BOARD_WIDTH,
+                          .height = BOARD_HEIGHT,
+                          .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8,
+                          .data = (void *)wall_data};
+    for (int y = 0; y < BOARD_HEIGHT; y++) {
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            unsigned char col = game->board[y][x] == WALL ? 255 : 0;
+            wall_data[y][x][0] = col;
+            wall_data[y][x][1] = col;
+            wall_data[y][x][2] = col;
+        }
+    }
+    Mesh walls_mesh = GenMeshCubicmap(walls, (Vector3){1.0, WALL_HEIGHT, 1.0});
+    client->walls = LoadModelFromMesh(walls_mesh);
+    client->walls.materials[0].shader = client->shader;
+    client->walls.materials[0].maps[MATERIAL_MAP_DIFFUSE].color =
+        (Color){0, 255, 255, 255};
 }
