@@ -2,6 +2,13 @@
     "files.associations": {
         "__node_handle": "c",
         "cstdio": "c",
-        "locale": "c"
+        "locale": "c",
+        "__config": "c",
+        "type_traits": "c",
+        "*.ipp": "c",
+        "*.tcc": "c",
+        "compare": "c",
+        "limits": "c",
+        "ratio": "c"
     }
 }

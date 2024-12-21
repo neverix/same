@@ -8,19 +8,23 @@
 
 #define maxi(a, b) ((a) > (b) ? (a) : (b))
 #define imin(a, b) ((a) < (b) ? (a) : (b))
+#define sign(x) ((x) > 0 ? 1 : -1)
 // #define BOARD_WIDTH 256
 // #define BOARD_HEIGHT 256
 #define BOARD_WIDTH 512
 #define BOARD_HEIGHT 512
 // #define BOARD_WIDTH 1024
 // #define BOARD_HEIGHT 1024
-#define WALL_HEIGHT 5.0
+#define WALL_HEIGHT 5.0f
 #define RENDER_CHUNK 32
 #define GRAD_NOISE_BLOCK 16
-#define GRAD_NOISE_THRESHOLD -0.05
+// #define GRAD_NOISE_THRESHOLD -0.05
+#define GRAD_NOISE_THRESHOLD -0.01
 // #define ACCELERATION 0.5f
 #define ACCELERATION 2.0f
 #define MOVE_SPEED 0.5f
+#define ATTRACTION_MULTIPLIER_VELOCITY 2.0f
+#define ATTRACTION_MULTIPLIER_ACCELERATION 3.0f
 #define BOUNCE_SPEED 0.2f
 
 #define CAM_OFFSET 45.0
@@ -46,11 +50,20 @@
 #define MIN_INIT_SIZE 0.2f
 #define MAX_INIT_SIZE 0.5f
 #define MIN_RADIUS 0.5f
+// #define MIN_RADIUS 2.0f
 
 #define LOG_SIZE_DECAY_PER_S 0.03f
-#define PER_DESTROYED_SIZE 0.0005f
+// #define LOG_ATTRACTION_DECAY_PER_S 0.3f
+#define LOG_ATTRACTION_DECAY_PER_S 1.2f
+#define PER_DESTROYED_SIZE 0.0004f
+// #define LOSE_BOUNCE_BONUS 0.03f
+#define LOSE_BOUNCE_BONUS 0.0f
+#define BALL_TO_BALL_IMPULSE (MOVE_SPEED * 2)
+#define ATTRACT_SIZE 0.25f
 
-#define DEATH_SIZE 0.01f
+#define DEATH_SIZE 0.1f
+
+#define FIGHT_PERIOD 0.2f
 
 typedef enum Cell {
     EMPTY,
@@ -78,6 +91,8 @@ typedef struct Entity {
     Vector2 velocity;
     Vector2 target_velocity;
     float size;
+    float immune_since;
+    bool attracted;
 } Entity;
 
 typedef struct {
@@ -105,6 +120,7 @@ void handle_controls(Client *client, Game *game);
 bool process_collisions(Game *game, float dt);
 bool regen_board(Game *game);
 void copy_past_board(Client *client, Game *game);
+void attract_to_nearest(Entity *e, Game *game);
 
 Mesh gen_cylinder();
 void generate_wall(Client *client, Game *game);
@@ -114,10 +130,10 @@ inline float ent_radius(Entity *e) {
 }
 
 inline float deceleration(Entity *e) {
-    // if (e-> size > MIN_INIT_SIZE)
-        // return sqrt(e->size / MIN_INIT_SIZE);
-    // else
+    if (e-> size > MIN_INIT_SIZE)
         return e->size / MIN_INIT_SIZE;
+    else
+        return 1.0;
 }
 
 int main(void) {
@@ -177,6 +193,7 @@ int main(void) {
     generate_wall(client, game);
 
     SetTargetFPS(60);
+    SetTraceLogLevel(LOG_WARNING);
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
@@ -186,7 +203,7 @@ int main(void) {
             for (int i = 1; i < game->n_entities; i++) {
                 Vector2 target = (Vector2) {rand() / (float)RAND_MAX - 0.5,
                                             rand() / (float)RAND_MAX - 0.5};
-                target = Vector2Scale(Vector2Normalize(target), MOVE_SPEED);
+                target = Vector2Normalize(target);
                 game->entities[i].target_velocity = target;
             }
         }
@@ -195,9 +212,18 @@ int main(void) {
             regen_board(game);
             game->last_regenned = game->elapsed_time;
         }
-        for (int i = 0; i < game->n_entities; i++) {
+        for (int i = game->n_entities - 1; i >= 0; i--) {
             // game->entities[i].size -= SIZE_DECAY_PER_S * dt;
-            game->entities[i].size = exp2(log2(game->entities[i].size) - LOG_SIZE_DECAY_PER_S * dt);
+            if (game->entities[i].size >= DEATH_SIZE) {
+                if (!game->entities[i].attracted) {
+                    game->entities[i].size = exp2(log2(game->entities[i].size) -
+                                                  LOG_SIZE_DECAY_PER_S * dt);
+                } else {
+                    game->entities[i].size =
+                        exp2(log2(game->entities[i].size) -
+                             LOG_ATTRACTION_DECAY_PER_S * dt);
+                }
+            }
             if (game->entities[i].size < DEATH_SIZE) {
                 destroy_entity(game, &game->entities[i]);
             }
@@ -214,11 +240,17 @@ int main(void) {
 inline bool process_collisions(Game *game, float dt) {
     bool wall_changed = false;
     for (int i = 0; i < game->n_entities; i++) {
+        Vector2 target = Vector2Scale(game->entities[i].target_velocity,
+                                      MOVE_SPEED * (game->entities[i].attracted
+                                          ? ATTRACTION_MULTIPLIER_VELOCITY
+                                          : 1.0));
         game->entities[i].velocity = Vector2Add(
             game->entities[i].velocity,
-            Vector2ClampValue(Vector2Subtract(game->entities[i].target_velocity,
+            Vector2ClampValue(Vector2Subtract(target,
                                               game->entities[i].velocity),
-                              0.0, ACCELERATION / deceleration(&game->entities[i]) * dt));
+                              0.0, ACCELERATION / deceleration(&game->entities[i]) * (game->entities[i].attracted
+                                          ? ATTRACTION_MULTIPLIER_ACCELERATION
+                                          : 1.0) * dt));
         Vector2 og_velocity = game->entities[i].velocity;
         Vector2 original_position = game->entities[i].position;
         Vector2 projected_position = Vector2Add(original_position, og_velocity);
@@ -277,33 +309,37 @@ inline bool process_collisions(Game *game, float dt) {
         }
 
         if (with_wall) {
-            Vector2 epicenter = game->entities[i].position;
-            int destroyed = 0;
-            for (int ox = -ceil(DESTRUCTION_RADIUS); ox <= ceil(DESTRUCTION_RADIUS); ox++) {
-                for (int oy = -ceil(DESTRUCTION_RADIUS); oy <= ceil(DESTRUCTION_RADIUS); oy++) {
-                    Vector2 offset = {ox, oy};
-                    if (Vector2Length(offset) > DESTRUCTION_RADIUS) {
-                        continue;
-                    }
-                    Vector2 target = Vector2Add(epicenter, offset);
-                    if (target.x < -BOARD_WIDTH / 2 || target.x >= BOARD_WIDTH / 2 ||
-                        target.y < -BOARD_HEIGHT / 2 || target.y >= BOARD_HEIGHT / 2) {
-                        continue;
-                    }
-                    if (game->board[(int)(target.y + BOARD_HEIGHT / 2)][(int)(target.x + BOARD_WIDTH / 2)] == WALL) {
-                        int a = (int)(target.y + BOARD_HEIGHT / 2), b = (int)(target.x + BOARD_WIDTH / 2);
-                        game->board[a][b] = EMPTY;
-                        game->was_destroyed[a][b] = true;
-                        wall_changed = true;
-                        destroyed++;
+            if (!game->entities[i].attracted) {
+                Vector2 epicenter = game->entities[i].position;
+                int destroyed = 0;
+                for (int ox = -ceil(DESTRUCTION_RADIUS); ox <= ceil(DESTRUCTION_RADIUS); ox++) {
+                    for (int oy = -ceil(DESTRUCTION_RADIUS); oy <= ceil(DESTRUCTION_RADIUS); oy++) {
+                        Vector2 offset = {ox, oy};
+                        if (Vector2Length(offset) > DESTRUCTION_RADIUS) {
+                            continue;
+                        }
+                        Vector2 target = Vector2Add(epicenter, offset);
+                        if (target.x < -BOARD_WIDTH / 2 || target.x >= BOARD_WIDTH / 2 ||
+                            target.y < -BOARD_HEIGHT / 2 || target.y >= BOARD_HEIGHT / 2) {
+                            continue;
+                        }
+                        if (game->board[(int)(target.y + BOARD_HEIGHT / 2)][(int)(target.x + BOARD_WIDTH / 2)] == WALL) {
+                            int a = (int)(target.y + BOARD_HEIGHT / 2), b = (int)(target.x + BOARD_WIDTH / 2);
+                            game->board[a][b] = EMPTY;
+                            game->was_destroyed[a][b] = true;
+                            wall_changed = true;
+                            destroyed++;
+                        }
                     }
                 }
+                game->entities[i].size += destroyed * PER_DESTROYED_SIZE;
+            } else {
+                game->entities[i].size -= LOSE_BOUNCE_BONUS;
             }
-            game->entities[i].size += destroyed * PER_DESTROYED_SIZE;
         }
     }
-    for (int i = 0; i < 1; i++) {
-    // for (int i = 0; i < game->n_entities - 1; i++) {
+    // for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < game->n_entities - 1; i++) {
         for (int j = i + 1; j < game->n_entities; j++) {
             if (Vector2Distance(game->entities[i].position, game->entities[j].position) >
                 ent_radius(&game->entities[i]) + ent_radius(&game->entities[j])) {
@@ -323,32 +359,38 @@ inline bool process_collisions(Game *game, float dt) {
             // split
             float i_kinetic_energy = i_size * i_dot * i_dot;
             float j_kinetic_energy = j_size * j_dot * j_dot;
-            float i_fraction = i_kinetic_energy / (i_kinetic_energy + j_kinetic_energy) - 1;
-            float j_fraction = j_kinetic_energy / (i_kinetic_energy + j_kinetic_energy) - 1;
+            if (i_kinetic_energy + j_kinetic_energy == 0) {
+                continue;
+            }
+            float i_fraction = 0.5 * (i_kinetic_energy - j_kinetic_energy) / fabsf(i_kinetic_energy - j_kinetic_energy);
+            float j_fraction = 0.5 * (j_kinetic_energy - j_kinetic_energy) / fabsf(i_kinetic_energy - j_kinetic_energy);
             if (i_dot > 0 && j_dot > 0) {
                 // both point in the j->i direction, therefore we give all the energy to j
-                i_fraction = 0.0;
-                j_fraction = 1.0;
+                i_fraction = -0.5;
+                j_fraction = 0.5;
             } else if (i_dot < 0 && j_dot < 0) {
-                i_fraction = 1.0;
-                j_fraction = 0.0;
+                i_fraction = 0.5;
+                j_fraction = -0.5;
             }
-            game->entities[i].size += to_redistribute * i_fraction;
-            game->entities[j].size += to_redistribute * j_fraction;
+            // if (i == 0) {
+            //     printf("to_redistribute: %f, i_fraction: %f, j_fraction: %f\n", to_redistribute, i_fraction, j_fraction);
+            // }
+            if (game->elapsed_time - game->entities[j].immune_since >= FIGHT_PERIOD
+                && game->elapsed_time - game->entities[i].immune_since >= FIGHT_PERIOD) {
+                game->entities[i].size += to_redistribute * i_fraction;
+                game->entities[j].size += to_redistribute * j_fraction;
+                game->entities[i].immune_since = game->elapsed_time;
+                game->entities[j].immune_since = game->elapsed_time;
+            }
             // add impulse
             i_velocity = Vector2Subtract(i_velocity, Vector2Scale(direction, i_dot));
             j_velocity = Vector2Subtract(j_velocity, Vector2Scale(direction, j_dot));
-            i_velocity = Vector2Add(i_velocity, Vector2Scale(direction, j_dot));
-            j_velocity = Vector2Add(j_velocity, Vector2Scale(direction, i_dot));
+            i_velocity = Vector2Add(i_velocity, Vector2Scale(direction, sign(j_dot) * BALL_TO_BALL_IMPULSE));
+            j_velocity = Vector2Add(j_velocity, Vector2Scale(direction, sign(i_dot) * BALL_TO_BALL_IMPULSE));
             game->entities[i].velocity = i_velocity;
             game->entities[j].velocity = j_velocity;
             game->entities[i].position = Vector2Add(game->entities[i].position, Vector2Scale(i_velocity, dt * 2));
             game->entities[j].position = Vector2Add(game->entities[j].position, Vector2Scale(j_velocity, dt * 2));
-        }
-    }
-    for (int i = 0; i < game->n_entities; i++) {
-        if (game->entities[i].size < DEATH_SIZE) {
-            destroy_entity(game, &game->entities[i]);
         }
     }
     game->elapsed_time += dt;
@@ -371,30 +413,38 @@ void handle_controls(Client *client, Game *game) {
     }
 
     game->entities[0].target_velocity = (Vector2){0, 0};
+    game->entities[0].attracted = false;
 
     Vector2 camera_forward = Vector2Normalize(Vector2Subtract(
         (Vector2){client->camera.target.x, client->camera.target.z},
         (Vector2){client->camera.position.x, client->camera.position.z}));
-    camera_forward = Vector2Scale(camera_forward, MOVE_SPEED);
+    // camera_forward = Vector2Scale(camera_forward, MOVE_SPEED);
     Vector2 camera_right = Vector2Rotate(camera_forward, PI / 2);
+    Vector2 direction = Vector2Zero();
     if (IsKeyDown(KEY_K)) {
-        game->entities[0].target_velocity =
-            Vector2Add(game->entities[0].target_velocity, camera_forward);
+        direction =
+            Vector2Add(direction, camera_forward);
     }
     if (IsKeyDown(KEY_J)) {
-        game->entities[0].target_velocity =
-            Vector2Subtract(game->entities[0].target_velocity, camera_forward);
+        direction =
+            Vector2Subtract(direction, camera_forward);
     }
     if (IsKeyDown(KEY_L)) {
-        game->entities[0].target_velocity =
-            Vector2Add(game->entities[0].target_velocity, camera_right);
+        direction =
+            Vector2Add(direction, camera_right);
     }
     if (IsKeyDown(KEY_H)) {
-        game->entities[0].target_velocity =
-            Vector2Subtract(game->entities[0].target_velocity, camera_right);
+        direction =
+            Vector2Subtract(direction, camera_right);
     }
-    game->entities[0].target_velocity =
-        Vector2ClampValue(game->entities[0].target_velocity, 0.0, MOVE_SPEED);
+    if (Vector2Length(direction) > 0.0) {
+        game->entities[0].target_velocity = Vector2Normalize(direction);
+    } else {
+        game->entities[0].target_velocity = (Vector2){0, 0};
+    }
+    if (IsKeyDown(KEY_SLASH)) {
+        attract_to_nearest(&game->entities[0], game);
+    }
 }
 
 void draw(Client *client, Game *game) {
@@ -751,13 +801,41 @@ void copy_past_board(Client *client, Game *game) {
 }
 
 void destroy_entity(Game *game, Entity *e) {
-    int offset = (e - game->entities) / sizeof(Entity);
+    int offset = ((int)(e - game->entities));
     if (offset == 0) {
         printf("tried to destroy player\n");
+        printf("size: %f\n", e->size);
         exit(1);
     }
     Entity tmp = game->entities[offset];
     game->entities[offset] = game->entities[game->n_entities - 1];
     game->entities[game->n_entities - 1] = tmp;
     game->n_entities--;
+}
+
+void attract_to_nearest(Entity *entity, Game *game) {
+    if (entity->size < ATTRACT_SIZE) {
+        return;
+    }
+    float nearest_distance = __FLT_MAX__;
+    int nearest_index = -1;
+    for (int i = 0; i < game->n_entities; i++) {
+        if (entity == &game->entities[i]) {
+            continue;
+        }
+        if (game->entities[i].size < DEATH_SIZE) {
+            continue;
+        }
+        if (Vector2Distance(entity->position, game->entities[i].position) < ent_radius(entity) + ent_radius(&game->entities[i])) {
+            continue;
+        }
+        float distance = Vector2Distance(entity->position, game->entities[i].position);
+        if (distance < nearest_distance) {
+            nearest_distance = distance;
+            nearest_index = i;
+        }
+    }
+    Vector2 direction = Vector2Normalize(Vector2Subtract(game->entities[nearest_index].position, entity->position));
+    entity->attracted = true;
+    entity->target_velocity = direction;
 }
