@@ -110,8 +110,10 @@ mat2 rot_matrix(float angle) {
 
 vec3 darkGreen = vec3(0.1, 0.2, 0.1) / 0.5;
 vec3 slightlyLighterGreen = vec3(0.2, 0.3, 0.2) / 0.5;
-vec3 darkBrown = vec3(0.2, 0.1, 0.0) / 0.6;
-vec3 brown = vec3(0.35, 0.25, 0.1) / 0.6;
+// vec3 darkBrown = vec3(0.2, 0.1, 0.0) / 0.6;
+vec3 darkBrown = vec3(0.2, 0.1, 0.1) / 0.6;
+// vec3 brown = vec3(0.35, 0.25, 0.1) / 0.6;
+vec3 brown = vec3(0.35, 0.25, 0.3) / 0.6;
 vec3 darkestBrown = darkBrown * (darkBrown / brown);
 
 void main() {
@@ -130,14 +132,23 @@ void main() {
         finalColor = vec4(mix(darkBrown, brown, height), 1.0);
     } else if (colDiffuse.r == 0.0 && colDiffuse.g == 0.0 && colDiffuse.b == 1.0) {
         vec3 skyDir = fragPositionWorld / (sky_extents / 200.0);
-        float noiseValue = fbm_3d(skyDir);
-        #define star_thresh 0.68
-        float grays = max(0.0, noiseValue - star_thresh) * 10;
-        float color = max(0.0, noiseValue - star_thresh + 0.01) * 10;
-        vec3 starColor = vec3(0.0, 0.0, 1.0);
-        starColor.xz = rot_matrix(-fbm_3d(skyDir.xzy / 4) * PI / 3) * starColor.xz;
-        // starColor.yz = rot_matrix(fbm_3d(skyDir.yzx / 4) * PI * 2) * starColor.yz;
-        finalColor = vec4(gray(grays).rgb + color * starColor, 1.0);
+        vec3 resultColor = vec3(0.0);
+        float star_thresh = 0.7;
+        float col_range = PI / 2;
+        float color_div = 4.0;
+        for (int i = 0; i < 3; i++) {
+            float noiseValue = fbm_3d(skyDir);
+            float grays = max(0.0, noiseValue - star_thresh) * 10;
+            float color = max(0.0, noiseValue - star_thresh + 0.01) * 10;
+            vec3 starColor = vec3(0.0, 0.0, 1.0);
+            starColor.xz = rot_matrix(-fbm_3d(skyDir.xzy / color_div) * col_range) * starColor.xz;
+            resultColor += gray(grays).rgb + color * starColor;
+            skyDir /= sqrt(30.0);
+            star_thresh -= 0.05;
+            col_range *= 2;
+            color_div /= 2.0;
+        }
+        finalColor = vec4(resultColor, 1.0);
     } else {
         finalColor = fragColor;
     }

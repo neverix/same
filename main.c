@@ -39,6 +39,13 @@
 #define REGEN_EVERY_S 2.0f
 
 #define SKY_SIZE 1000.0f
+
+#define MIN_INIT_SIZE 0.25f
+#define MAX_INIT_SIZE 1.0f
+
+#define SIZE_DECAY_PER_S 0.02f
+#define PER_DESTROYED_SIZE 0.005f
+
 typedef enum Cell {
     EMPTY,
     WALL,
@@ -64,10 +71,7 @@ typedef struct Entity {
     Vector2 position;
     Vector2 velocity;
     Vector2 target_velocity;
-    float power;
-    float atk;
-    float def;
-    float hp;
+    float size;
 } Entity;
 
 typedef struct {
@@ -97,8 +101,7 @@ void copy_past_board(Client *client, Game *game);
 Mesh gen_cylinder();
 void generate_wall(Client *client, Game *game);
 
-// inline float ent_radius(Entity *e) { return 0.5f; }
-inline float ent_radius(Entity *e) { return 1.2f; }
+inline float ent_radius(Entity *e) { return e->size; }
 
 int main(void) {
     Game *game = calloc(1, sizeof(Game));
@@ -129,6 +132,9 @@ int main(void) {
                 break;
             }
         }
+        game->entities[i].size =
+            MIN_INIT_SIZE +
+            (MAX_INIT_SIZE - MIN_INIT_SIZE) * rand() / (float)RAND_MAX;
     }
 
     Client *client = calloc(1, sizeof(Client));
@@ -171,6 +177,13 @@ int main(void) {
         if (game->elapsed_time - game->last_regenned > REGEN_EVERY_S) {
             regen_board(game);
             game->last_regenned = game->elapsed_time;
+        }
+        for (int i = 0; i < game->n_entities; i++) {
+            game->entities[i].size -= SIZE_DECAY_PER_S * dt;
+            if (game->entities[i].size < 0.0) {
+                printf("ded");
+                game->entities[i].size = 0.01;
+            }
         }
         generate_wall(client, game);
         game->frame++;
@@ -248,6 +261,7 @@ bool process_collisions(Game *game, float dt) {
 
         if (with_wall) {
             Vector2 epicenter = game->entities[i].position;
+            int destroyed = 0;
             for (int ox = -ceil(DESTRUCTION_RADIUS); ox <= ceil(DESTRUCTION_RADIUS); ox++) {
                 for (int oy = -ceil(DESTRUCTION_RADIUS); oy <= ceil(DESTRUCTION_RADIUS); oy++) {
                     Vector2 offset = {ox, oy};
@@ -264,9 +278,11 @@ bool process_collisions(Game *game, float dt) {
                         game->board[a][b] = EMPTY;
                         game->was_destroyed[a][b] = true;
                         wall_changed = true;
+                        destroyed++;
                     }
                 }
             }
+            game->entities[i].size += destroyed * PER_DESTROYED_SIZE;
         }
     }
     game->elapsed_time += dt;
@@ -510,8 +526,10 @@ inline bool regen_board(Game *game) {
     for (int i = 0; i < game->n_entities; i++) {
         Vector2 pos = game->entities[i].position;
         int y = pos.y + BOARD_HEIGHT / 2, x = pos.x + BOARD_WIDTH / 2;
-        for (int oy = -2; oy <= 2; oy++) {
-            for (int ox = -2; ox <= 2; ox++) {
+        float radius = ent_radius(&game->entities[i]);
+        int radius_ceil = ceil(radius * 1.2);
+        for (int oy = -radius_ceil; oy <= radius_ceil; oy++) {
+            for (int ox = -radius_ceil; ox <= radius_ceil; ox++) {
                 int ry = y + oy, rx = x + ox;
                 if (ry < 0 || ry >= BOARD_HEIGHT || rx < 0 || rx >= BOARD_WIDTH) {
                     continue;
