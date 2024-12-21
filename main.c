@@ -12,11 +12,14 @@
 // #define BOARD_HEIGHT 256
 #define BOARD_WIDTH 512
 #define BOARD_HEIGHT 512
+// #define BOARD_WIDTH 1024
+// #define BOARD_HEIGHT 1024
 #define WALL_HEIGHT 5.0
 #define RENDER_CHUNK 32
 #define GRAD_NOISE_BLOCK 16
 #define GRAD_NOISE_THRESHOLD -0.05
-#define ACCELERATION 0.5f
+// #define ACCELERATION 0.5f
+#define ACCELERATION 2.0f
 #define MOVE_SPEED 0.5f
 #define BOUNCE_SPEED 0.2f
 
@@ -40,11 +43,14 @@
 
 #define SKY_SIZE 1000.0f
 
-#define MIN_INIT_SIZE 0.25f
-#define MAX_INIT_SIZE 1.0f
+#define MIN_INIT_SIZE 0.2f
+#define MAX_INIT_SIZE 0.5f
+#define MIN_RADIUS 0.5f
 
-#define SIZE_DECAY_PER_S 0.02f
-#define PER_DESTROYED_SIZE 0.005f
+#define LOG_SIZE_DECAY_PER_S 0.03f
+#define PER_DESTROYED_SIZE 0.0005f
+
+#define DEATH_SIZE 0.01f
 
 typedef enum Cell {
     EMPTY,
@@ -92,6 +98,8 @@ typedef struct {
 void gen_board(Game *game);
 void grad_noise(float *result_buf);
 
+void destroy_entity(Game *game, Entity *e);
+
 void draw(Client *client, Game *game);
 void handle_controls(Client *client, Game *game);
 bool process_collisions(Game *game, float dt);
@@ -101,7 +109,16 @@ void copy_past_board(Client *client, Game *game);
 Mesh gen_cylinder();
 void generate_wall(Client *client, Game *game);
 
-inline float ent_radius(Entity *e) { return e->size; }
+inline float ent_radius(Entity *e) {
+    return sqrt(e->size / MIN_INIT_SIZE) * MIN_RADIUS;
+}
+
+inline float deceleration(Entity *e) {
+    // if (e-> size > MIN_INIT_SIZE)
+        // return sqrt(e->size / MIN_INIT_SIZE);
+    // else
+        return e->size / MIN_INIT_SIZE;
+}
 
 int main(void) {
     Game *game = calloc(1, sizeof(Game));
@@ -179,10 +196,10 @@ int main(void) {
             game->last_regenned = game->elapsed_time;
         }
         for (int i = 0; i < game->n_entities; i++) {
-            game->entities[i].size -= SIZE_DECAY_PER_S * dt;
-            if (game->entities[i].size < 0.0) {
-                printf("ded");
-                game->entities[i].size = 0.01;
+            // game->entities[i].size -= SIZE_DECAY_PER_S * dt;
+            game->entities[i].size = exp2(log2(game->entities[i].size) - LOG_SIZE_DECAY_PER_S * dt);
+            if (game->entities[i].size < DEATH_SIZE) {
+                destroy_entity(game, &game->entities[i]);
             }
         }
         generate_wall(client, game);
@@ -194,14 +211,14 @@ int main(void) {
     return 0;
 }
 
-bool process_collisions(Game *game, float dt) {
+inline bool process_collisions(Game *game, float dt) {
     bool wall_changed = false;
     for (int i = 0; i < game->n_entities; i++) {
         game->entities[i].velocity = Vector2Add(
             game->entities[i].velocity,
             Vector2ClampValue(Vector2Subtract(game->entities[i].target_velocity,
                                               game->entities[i].velocity),
-                              0.0, ACCELERATION * dt));
+                              0.0, ACCELERATION / deceleration(&game->entities[i]) * dt));
         Vector2 og_velocity = game->entities[i].velocity;
         Vector2 original_position = game->entities[i].position;
         Vector2 projected_position = Vector2Add(original_position, og_velocity);
@@ -285,6 +302,55 @@ bool process_collisions(Game *game, float dt) {
             game->entities[i].size += destroyed * PER_DESTROYED_SIZE;
         }
     }
+    for (int i = 0; i < 1; i++) {
+    // for (int i = 0; i < game->n_entities - 1; i++) {
+        for (int j = i + 1; j < game->n_entities; j++) {
+            if (Vector2Distance(game->entities[i].position, game->entities[j].position) >
+                ent_radius(&game->entities[i]) + ent_radius(&game->entities[j])) {
+                    continue;
+            }
+            float i_size = game->entities[i].size;
+            float j_size = game->entities[j].size;
+            if (i_size < DEATH_SIZE || j_size < DEATH_SIZE) {
+                continue;
+            }
+            Vector2 direction = Vector2Normalize(Vector2Subtract(game->entities[i].position, game->entities[j].position));
+            Vector2 i_velocity = game->entities[i].velocity;
+            Vector2 j_velocity = game->entities[j].velocity;
+            float i_dot = Vector2DotProduct(i_velocity, direction);
+            float j_dot = Vector2DotProduct(j_velocity, direction);
+            float to_redistribute = fmin(0.15, fmax(i_size, j_size));
+            // split
+            float i_kinetic_energy = i_size * i_dot * i_dot;
+            float j_kinetic_energy = j_size * j_dot * j_dot;
+            float i_fraction = i_kinetic_energy / (i_kinetic_energy + j_kinetic_energy) - 1;
+            float j_fraction = j_kinetic_energy / (i_kinetic_energy + j_kinetic_energy) - 1;
+            if (i_dot > 0 && j_dot > 0) {
+                // both point in the j->i direction, therefore we give all the energy to j
+                i_fraction = 0.0;
+                j_fraction = 1.0;
+            } else if (i_dot < 0 && j_dot < 0) {
+                i_fraction = 1.0;
+                j_fraction = 0.0;
+            }
+            game->entities[i].size += to_redistribute * i_fraction;
+            game->entities[j].size += to_redistribute * j_fraction;
+            // add impulse
+            i_velocity = Vector2Subtract(i_velocity, Vector2Scale(direction, i_dot));
+            j_velocity = Vector2Subtract(j_velocity, Vector2Scale(direction, j_dot));
+            i_velocity = Vector2Add(i_velocity, Vector2Scale(direction, j_dot));
+            j_velocity = Vector2Add(j_velocity, Vector2Scale(direction, i_dot));
+            game->entities[i].velocity = i_velocity;
+            game->entities[j].velocity = j_velocity;
+            game->entities[i].position = Vector2Add(game->entities[i].position, Vector2Scale(i_velocity, dt * 2));
+            game->entities[j].position = Vector2Add(game->entities[j].position, Vector2Scale(j_velocity, dt * 2));
+        }
+    }
+    for (int i = 0; i < game->n_entities; i++) {
+        if (game->entities[i].size < DEATH_SIZE) {
+            destroy_entity(game, &game->entities[i]);
+        }
+    }
     game->elapsed_time += dt;
     return wall_changed;
 }
@@ -299,7 +365,7 @@ void handle_controls(Client *client, Game *game) {
             camera_motion = (Vector2){0.0, 0.0};
         Vector2 new_camera = Vector2Add(
             client->camera_angle, Vector2Scale(camera_motion, MOUSE_SPEED));
-        new_camera.x = Clamp(new_camera.x, 0.0, PI * 0.4);
+        new_camera.x = Clamp(new_camera.x, PI * 0.05, PI * 0.4);
         client->camera_angle = new_camera;
         client->camera_moved = true;
     }
@@ -405,12 +471,14 @@ void draw(Client *client, Game *game) {
 
     DrawFPS(10, 10);
     char textbuf[256];
+    // snprintf(textbuf, 256,
+    //          "x: %.1f, y: %.1f, vx: %.1f, vy: %.1f, tvx: %.1f, tvy: %.1f",
+    //          game->entities[0].position.x, game->entities[0].position.y,
+    //          game->entities[0].velocity.x, game->entities[0].velocity.y,
+    //          game->entities[0].target_velocity.x,
+    //          game->entities[0].target_velocity.y);
     snprintf(textbuf, 256,
-             "x: %.1f, y: %.1f, vx: %.1f, vy: %.1f, tvx: %.1f, tvy: %.1f",
-             game->entities[0].position.x, game->entities[0].position.y,
-             game->entities[0].velocity.x, game->entities[0].velocity.y,
-             game->entities[0].target_velocity.x,
-             game->entities[0].target_velocity.y);
+        "size: %.2f", game->entities[0].size);
     DrawText(textbuf, 100, 10, 20, RED);
 
     EndDrawing();
@@ -680,4 +748,16 @@ void copy_past_board(Client *client, Game *game) {
             client->past_board[y][x] = game->board[y][x];
         }
     }
+}
+
+void destroy_entity(Game *game, Entity *e) {
+    int offset = (e - game->entities) / sizeof(Entity);
+    if (offset == 0) {
+        printf("tried to destroy player\n");
+        exit(1);
+    }
+    Entity tmp = game->entities[offset];
+    game->entities[offset] = game->entities[game->n_entities - 1];
+    game->entities[game->n_entities - 1] = tmp;
+    game->n_entities--;
 }

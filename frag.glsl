@@ -15,7 +15,7 @@ uniform vec4 colDiffuse;
 
 // Output fragment color
 out vec4 finalColor;
-#define fbm_steps 4
+#define fbm_steps 6
 #define wall_height 5.0
 #define outer_wall_height 10.0
 #define sky_extents 1000.0
@@ -134,15 +134,18 @@ void main() {
         vec3 skyDir = fragPositionWorld / (sky_extents / 200.0);
         vec3 resultColor = vec3(0.0);
         float star_thresh = 0.7;
-        float col_range = PI / 2;
+        // float col_range = PI / 2;
+        float col_range = PI / 6;
+        float col_shift = 0;
         float color_div = 4.0;
         for (int i = 0; i < 3; i++) {
             float noiseValue = fbm_3d(skyDir);
             float grays = max(0.0, noiseValue - star_thresh) * 10;
             float color = max(0.0, noiseValue - star_thresh + 0.01) * 10;
             vec3 starColor = vec3(0.0, 0.0, 1.0);
-            starColor.xz = rot_matrix(-fbm_3d(skyDir.xzy / color_div) * col_range) * starColor.xz;
-            resultColor += gray(grays).rgb + color * starColor;
+            starColor.xz = rot_matrix(col_shift-fbm_3d(skyDir.xzy / color_div) * col_range) * starColor.xz;
+            // resultColor += gray(grays).rgb + color * starColor;
+            resultColor = max(resultColor, gray(grays).rgb + color * starColor);
             skyDir /= sqrt(30.0);
             star_thresh -= 0.05;
             col_range *= 2;
