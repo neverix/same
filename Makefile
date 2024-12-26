@@ -12,4 +12,6 @@ run: same
 clean:
 	rm -f same
 
+default: same
+
 .PHONY: run clean
